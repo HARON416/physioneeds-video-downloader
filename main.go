@@ -56,9 +56,12 @@ type courseLesson struct {
 }
 
 type lessonCaptureReport struct {
-	Downloads       []videoDownload
-	CapturedLessons []courseLesson
-	FailedLessons   []courseLesson
+	Downloads                []videoDownload
+	CapturedLessons          []courseLesson
+	SkippedExisting          []courseLesson
+	FailedLessons            []courseLesson
+	UniqueOutputPaths        int
+	NumberedDuplicateEntries int
 }
 
 type playlistRequestCapture struct {
@@ -233,6 +236,55 @@ func courseOutputDir(courseTitle, section string) string {
 	return filepath.Join("downloads", sanitizePathComponent(courseTitle), sanitizePathComponent(section))
 }
 
+func numberedOutputPath(outputFile string, number int) string {
+	extension := filepath.Ext(outputFile)
+	stem := strings.TrimSuffix(outputFile, extension)
+	return fmt.Sprintf("%s %d%s", stem, number, extension)
+}
+
+func allocateLessonOutputPaths(basePaths []string) ([]string, int) {
+	pathCounts := make(map[string]int, len(basePaths))
+	for _, path := range basePaths {
+		if path != "" {
+			pathCounts[path]++
+		}
+	}
+
+	outputPaths := make([]string, len(basePaths))
+	usedPaths := make(map[string]struct{}, len(pathCounts))
+	for i, path := range basePaths {
+		if path != "" && pathCounts[path] == 1 {
+			outputPaths[i] = path
+			usedPaths[path] = struct{}{}
+		}
+	}
+
+	occurrences := make(map[string]int)
+	duplicateEntries := 0
+	for _, count := range pathCounts {
+		if count > 1 {
+			duplicateEntries += count - 1
+		}
+	}
+	for i, basePath := range basePaths {
+		if basePath == "" || pathCounts[basePath] < 2 {
+			continue
+		}
+
+		for number := occurrences[basePath] + 1; ; number++ {
+			candidate := numberedOutputPath(basePath, number)
+			_, alreadyUsed := usedPaths[candidate]
+			if !alreadyUsed && pathCounts[candidate] == 0 {
+				outputPaths[i] = candidate
+				usedPaths[candidate] = struct{}{}
+				occurrences[basePath] = number
+				break
+			}
+		}
+	}
+	return outputPaths, duplicateEntries
+}
+
 var Logger = log.NewWithOptions(os.Stderr, log.Options{
 	ReportTimestamp: true,
 	TimeFormat:      time.Kitchen,
@@ -345,23 +397,38 @@ func captureCourseLessons(
 	report := lessonCaptureReport{
 		Downloads:       make([]videoDownload, 0, len(lessons)),
 		CapturedLessons: make([]courseLesson, 0, len(lessons)),
+		SkippedExisting: make([]courseLesson, 0),
 		FailedLessons:   make([]courseLesson, 0),
 	}
 	seenDownloads := make(map[videoDownload]struct{}, len(lessons))
-
+	baseOutputPaths := make([]string, len(lessons))
 	for i, lesson := range lessons {
 		title := mp4OutputFile(lesson.Title)
 		if lesson.ID == "" || title == "" {
+			continue
+		}
+		baseOutputPaths[i] = filepath.Join(courseOutputDir(courseTitle, lesson.Section), title)
+	}
+	outputPaths, duplicateEntries := allocateLessonOutputPaths(baseOutputPaths)
+	report.NumberedDuplicateEntries = duplicateEntries
+	for _, outputPath := range outputPaths {
+		if outputPath != "" {
+			report.UniqueOutputPaths++
+		}
+	}
+
+	for i, lesson := range lessons {
+		outputFile := outputPaths[i]
+		if outputFile == "" {
 			report.FailedLessons = append(report.FailedLessons, lesson)
 			continue
 		}
-
-		outputFile := filepath.Join(courseOutputDir(courseTitle, lesson.Section), title)
 		exists, err := outputExists(outputFile)
 		if err != nil {
 			return report, err
 		}
 		if exists {
+			report.SkippedExisting = append(report.SkippedExisting, lesson)
 			Infof("SKIPPING EXISTING LESSON FILE: %s", outputFile)
 			continue
 		}
@@ -600,7 +667,15 @@ func getMasterURLsAndOutputFiles(itemCount int, startURL string, apkIDOnly, askF
 	for _, lesson := range report.FailedLessons {
 		Warnf("NO INDEX.M3U8 REQUEST WAS CAPTURED FOR %s / %s AFTER %d ATTEMPTS", lesson.Section, lesson.Title, playlistCaptureAttempts)
 	}
-	Infof("CAPTURE SUMMARY: %d OF %d VIDEO LESSONS CAPTURED; %d FAILED.", len(report.CapturedLessons), len(lessons), len(report.FailedLessons))
+	Infof(
+		"LESSON SUMMARY: %d VIDEO LESSONS; %d UNIQUE OUTPUT PATHS PLANNED; %d PLAYLISTS CAPTURED; %d EXISTING OUTPUTS SKIPPED; %d DUPLICATE-TITLE ENTRIES NUMBERED; %d FAILED.",
+		len(lessons),
+		report.UniqueOutputPaths,
+		len(report.CapturedLessons),
+		len(report.SkippedExisting),
+		report.NumberedDuplicateEntries,
+		len(report.FailedLessons),
+	)
 
 	downloadsPath := filepath.Join(cwd, "downloads.go")
 	if err := saveDownloads(downloadsPath, report.Downloads); err != nil {
@@ -1568,7 +1643,12 @@ func main() {
 		Info("SPAYEE_APK_ID RECEIVED.")
 	}
 	if len(report.Downloads) == 0 {
-		Prompt("No video downloads were queued. All lessons may already be downloaded, or the course URL/lesson list may be unavailable.")
+		Prompt(fmt.Sprintf(
+			"NO VIDEO DOWNLOADS QUEUED: %d EXISTING OUTPUTS SKIPPED; %d DUPLICATE-TITLE ENTRIES NUMBERED; %d LESSONS FAILED CAPTURE.",
+			len(report.SkippedExisting),
+			report.NumberedDuplicateEntries,
+			len(report.FailedLessons),
+		))
 		return
 	}
 	for i := range report.Downloads {

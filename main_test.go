@@ -104,6 +104,75 @@ func TestCourseLessonCaptureCoversModulesAndReportsMissingRequest(t *testing.T) 
 	}
 }
 
+func TestCourseLessonCaptureReportsExistingAndDuplicateOutputs(t *testing.T) {
+	t.Parallel()
+
+	lessons := []courseLesson{
+		{Section: "Module", Title: "Same Lesson", Type: "video", ID: "lesson-1"},
+		{Section: "Module", Title: "Same Lesson", Type: "video", ID: "lesson-2"},
+	}
+	var checkedPaths []string
+	report, err := captureCourseLessons(
+		lessons,
+		"Course",
+		0,
+		func(path string) (bool, error) {
+			checkedPaths = append(checkedPaths, path)
+			return true, nil
+		},
+		func(courseLesson) string { t.Fatal("existing outputs should not trigger playlist capture"); return "" },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.SkippedExisting) != 2 || report.UniqueOutputPaths != 2 || report.NumberedDuplicateEntries != 1 {
+		t.Fatalf("existing/unique/numbered-duplicate counts = %d/%d/%d, want 2/2/1",
+			len(report.SkippedExisting), report.UniqueOutputPaths, report.NumberedDuplicateEntries)
+	}
+	wantPaths := []string{
+		filepath.Join("downloads", "Course", "Module", "Same Lesson 1.mp4"),
+		filepath.Join("downloads", "Course", "Module", "Same Lesson 2.mp4"),
+	}
+	if len(checkedPaths) != len(wantPaths) {
+		t.Fatalf("checked %d output paths, want %d", len(checkedPaths), len(wantPaths))
+	}
+	for i, want := range wantPaths {
+		if checkedPaths[i] != want {
+			t.Errorf("output path %d = %q, want %q", i, checkedPaths[i], want)
+		}
+	}
+}
+
+func TestAllocateDuplicateOutputPathsAvoidsNaturalSuffixCollision(t *testing.T) {
+	t.Parallel()
+
+	basePath := filepath.Join("downloads", "Course", "Module", "Same Lesson.mp4")
+	naturallyNumberedPath := filepath.Join("downloads", "Course", "Module", "Same Lesson 1.mp4")
+	got, duplicateEntries := allocateLessonOutputPaths([]string{
+		basePath,
+		basePath,
+		naturallyNumberedPath,
+	})
+	want := []string{
+		filepath.Join("downloads", "Course", "Module", "Same Lesson 2.mp4"),
+		filepath.Join("downloads", "Course", "Module", "Same Lesson 3.mp4"),
+		naturallyNumberedPath,
+	}
+	if duplicateEntries != 1 {
+		t.Fatalf("duplicate entries = %d, want 1", duplicateEntries)
+	}
+	seen := make(map[string]struct{}, len(got))
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("output path %d = %q, want %q", i, got[i], want[i])
+		}
+		if _, exists := seen[got[i]]; exists {
+			t.Errorf("output path %q was assigned more than once", got[i])
+		}
+		seen[got[i]] = struct{}{}
+	}
+}
+
 func TestExistingOutputFile(t *testing.T) {
 	t.Parallel()
 
