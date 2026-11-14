@@ -173,6 +173,67 @@ func TestAllocateDuplicateOutputPathsAvoidsNaturalSuffixCollision(t *testing.T) 
 	}
 }
 
+func TestCleanupCompletedDuplicateOutputs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("removes old file after all replacements exist", func(t *testing.T) {
+		dir := t.TempDir()
+		original := filepath.Join(dir, "Lesson.mp4")
+		replacements := []string{
+			filepath.Join(dir, "Lesson 1.mp4"),
+			filepath.Join(dir, "Lesson 2.mp4"),
+		}
+		for _, path := range append([]string{original}, replacements...) {
+			if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		removed, err := cleanupCompletedDuplicateOutputs([]duplicateOutputGroup{{
+			originalPath:  original,
+			numberedPaths: replacements,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(removed) != 1 || removed[0] != original {
+			t.Fatalf("removed paths = %v, want only %q", removed, original)
+		}
+		if _, err := os.Stat(original); !os.IsNotExist(err) {
+			t.Fatalf("old file still exists or stat failed: %v", err)
+		}
+	})
+
+	t.Run("keeps old file until every replacement exists", func(t *testing.T) {
+		dir := t.TempDir()
+		original := filepath.Join(dir, "Lesson.mp4")
+		firstReplacement := filepath.Join(dir, "Lesson 1.mp4")
+		if err := os.WriteFile(original, []byte("video"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(firstReplacement, []byte("video"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		removed, err := cleanupCompletedDuplicateOutputs([]duplicateOutputGroup{{
+			originalPath: original,
+			numberedPaths: []string{
+				firstReplacement,
+				filepath.Join(dir, "Lesson 2.mp4"),
+			},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(removed) != 0 {
+			t.Fatalf("removed paths = %v, want none", removed)
+		}
+		if _, err := os.Stat(original); err != nil {
+			t.Fatalf("old file should be retained, stat error: %v", err)
+		}
+	})
+}
+
 func TestExistingOutputFile(t *testing.T) {
 	t.Parallel()
 

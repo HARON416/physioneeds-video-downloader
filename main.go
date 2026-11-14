@@ -62,6 +62,12 @@ type lessonCaptureReport struct {
 	FailedLessons            []courseLesson
 	UniqueOutputPaths        int
 	NumberedDuplicateEntries int
+	DuplicateOutputGroups    []duplicateOutputGroup
+}
+
+type duplicateOutputGroup struct {
+	originalPath  string
+	numberedPaths []string
 }
 
 type playlistRequestCapture struct {
@@ -409,12 +415,36 @@ func captureCourseLessons(
 		}
 		baseOutputPaths[i] = filepath.Join(courseOutputDir(courseTitle, lesson.Section), title)
 	}
+	basePathCounts := make(map[string]int, len(lessons))
+	for _, path := range baseOutputPaths {
+		if path != "" {
+			basePathCounts[path]++
+		}
+	}
 	outputPaths, duplicateEntries := allocateLessonOutputPaths(baseOutputPaths)
 	report.NumberedDuplicateEntries = duplicateEntries
 	for _, outputPath := range outputPaths {
 		if outputPath != "" {
 			report.UniqueOutputPaths++
 		}
+	}
+	groupIndexes := make(map[string]int)
+	for i, basePath := range baseOutputPaths {
+		if basePath == "" || basePathCounts[basePath] < 2 {
+			continue
+		}
+		groupIndex, exists := groupIndexes[basePath]
+		if !exists {
+			groupIndex = len(report.DuplicateOutputGroups)
+			groupIndexes[basePath] = groupIndex
+			report.DuplicateOutputGroups = append(report.DuplicateOutputGroups, duplicateOutputGroup{
+				originalPath: basePath,
+			})
+		}
+		report.DuplicateOutputGroups[groupIndex].numberedPaths = append(
+			report.DuplicateOutputGroups[groupIndex].numberedPaths,
+			outputPaths[i],
+		)
 	}
 
 	for i, lesson := range lessons {
@@ -454,6 +484,50 @@ func captureCourseLessons(
 	}
 
 	return report, nil
+}
+
+func cleanupCompletedDuplicateOutputs(groups []duplicateOutputGroup) ([]string, error) {
+	var removed []string
+	for _, group := range groups {
+		originalExists, err := existingOutputFile(group.originalPath)
+		if err != nil {
+			return removed, err
+		}
+		if !originalExists {
+			continue
+		}
+
+		allReplacementsExist := len(group.numberedPaths) > 1
+		for _, replacement := range group.numberedPaths {
+			exists, err := existingOutputFile(replacement)
+			if err != nil {
+				return removed, err
+			}
+			if !exists {
+				allReplacementsExist = false
+				break
+			}
+		}
+		if !allReplacementsExist {
+			continue
+		}
+		if err := os.Remove(group.originalPath); err != nil {
+			return removed, fmt.Errorf("remove obsolete duplicate output %q: %w", group.originalPath, err)
+		}
+		removed = append(removed, group.originalPath)
+	}
+	return removed, nil
+}
+
+func logRemovedDuplicateOutputs(groups []duplicateOutputGroup) error {
+	removed, err := cleanupCompletedDuplicateOutputs(groups)
+	if err != nil {
+		return err
+	}
+	for _, path := range removed {
+		Infof("REMOVED OBSOLETE UNSUFFIXED DUPLICATE OUTPUT: %s", path)
+	}
+	return nil
 }
 
 func discoverCourseLessons(page *rod.Page) []courseLesson {
@@ -1643,6 +1717,9 @@ func main() {
 		Info("SPAYEE_APK_ID RECEIVED.")
 	}
 	if len(report.Downloads) == 0 {
+		if err := logRemovedDuplicateOutputs(report.DuplicateOutputGroups); err != nil {
+			panic(err)
+		}
 		Prompt(fmt.Sprintf(
 			"NO VIDEO DOWNLOADS QUEUED: %d EXISTING OUTPUTS SKIPPED; %d DUPLICATE-TITLE ENTRIES NUMBERED; %d LESSONS FAILED CAPTURE.",
 			len(report.SkippedExisting),
@@ -1666,6 +1743,9 @@ func main() {
 		if err := downloadPreparedVideo(client, prepared[i]); err != nil {
 			panic(fmt.Errorf("download %q: %w", prepared[i].config.outputFile, err))
 		}
+	}
+	if err := logRemovedDuplicateOutputs(report.DuplicateOutputGroups); err != nil {
+		panic(err)
 	}
 
 	count, err := countMP4Files("downloads")

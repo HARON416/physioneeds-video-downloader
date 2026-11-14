@@ -10,7 +10,7 @@ A Go application for organizing, processing, and downloading video lessons from 
 - **Does not download PDFs or other non-video lesson types.**
 - Captures lesson playlist requests, retries missing captures, and reports lessons whose requests were not captured.
 - Saves output under `downloads/<course title>/<module>/<lesson title>.mp4`.
-- Numbers duplicate lesson titles within the same module (`Lesson 1.mp4`, `Lesson 2.mp4`, etc.) to avoid overwriting them.
+- Numbers duplicate lesson titles within the same module (`Lesson 1.mp4`, `Lesson 2.mp4`, etc.) to avoid overwriting them, and removes the old unsuffixed file only after all numbered replacements exist.
 - Starts traversal from the first video lesson on each run. Non-empty MP4 files already at the expected output path are skipped.
 
 ## Requirements
