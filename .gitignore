@@ -1,0 +1,14 @@
+# Browser profile contains authenticated session data.
+/browser_profile/
+
+# Downloaded media and resumable segment files.
+/downloads/
+/video_segs/
+/audio_segs/
+/video.ts
+/audio.ts
+
+# Generated playlist URLs may contain session-specific tokens.
+/downloads.go
+
+.vscode
